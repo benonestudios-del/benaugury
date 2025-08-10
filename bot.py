@@ -1,36 +1,49 @@
+# bot.py
+import os
 import json
 import random
 import re
+import asyncio
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
-import asyncio
 
-API_TOKEN = '8310792022:AAEo3e1kf2CZRr67PsUdMiIdYsjaCsgw2TA'
-ADMIN_ID = 6382960258  # твой ID
+# === Настройки из окружения ===
+API_TOKEN = os.getenv("API_TOKEN")
+if not API_TOKEN:
+    raise RuntimeError("Не задан API_TOKEN в переменных окружения")
+
+# ADMIN_ID можно не указывать — тогда админ-кнопка просто не появится
+_admin_id_env = os.getenv("ADMIN_ID")
+ADMIN_ID = int(_admin_id_env) if (_admin_id_env and _admin_id_env.isdigit()) else None
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()
 
+# === Данные ===
+FANFICS_PATH = os.getenv("FANFICS_PATH", "fanfics.json")
+
 # Загружаем фанфики
 try:
-    with open("fanfics.json", "r", encoding="utf-8") as f:
+    with open(FANFICS_PATH, "r", encoding="utf-8") as f:
         FANFICS = json.load(f)
 except FileNotFoundError:
     FANFICS = {}
 
 def save_fanfics():
-    with open("fanfics.json", "w", encoding="utf-8") as f:
+    # На Render файловая система эфемерная — при перезапуске данные пропадут.
+    # Для персистентности лучше потом перевезти это в БД (например, SQLite/Postgres).
+    with open(FANFICS_PATH, "w", encoding="utf-8") as f:
         json.dump(FANFICS, f, ensure_ascii=False, indent=2)
 
-# FSM для добавления фанфика
+# === FSM для добавления фанфика ===
 class AddFanfic(StatesGroup):
     waiting_for_title = State()
     waiting_for_text = State()
 
-# Команда /start
+# === Команда /start ===
 @dp.message(CommandStart())
 async def cmd_start(message: Message):
     await message.answer(
@@ -38,7 +51,7 @@ async def cmd_start(message: Message):
         reply_markup=get_fanfic_keyboard(user_id=message.from_user.id)
     )
 
-# Генерация клавиатуры (c учётом админа)
+# === Клавиатура (с учётом админа) ===
 def get_fanfic_keyboard(user_id: int | None = None):
     keyboard = [
         [InlineKeyboardButton(text=title, callback_data=f"fanfic:{i}")]
@@ -47,12 +60,12 @@ def get_fanfic_keyboard(user_id: int | None = None):
     keyboard.append([InlineKeyboardButton(text="🎲 Рандом", callback_data="random")])
 
     # Админская кнопка видна только админу
-    if user_id == ADMIN_ID:
+    if ADMIN_ID is not None and user_id == ADMIN_ID:
         keyboard.append([InlineKeyboardButton(text="➕ Добавить фанфик", callback_data="addfanfic")])
 
     return InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# Обработка выбора фанфика
+# === Обработка выбора фанфика ===
 @dp.callback_query(F.data.startswith("fanfic:"))
 async def handle_fanfic_selection(callback: CallbackQuery):
     index = int(callback.data.split(":")[1])
@@ -64,7 +77,7 @@ async def handle_fanfic_selection(callback: CallbackQuery):
         reply_markup=get_after_prediction_keyboard(index)
     )
 
-# Кнопка "Рандом"
+# === Кнопка "Рандом" ===
 @dp.callback_query(F.data == "random")
 async def handle_random(callback: CallbackQuery):
     if not FANFICS:
@@ -79,7 +92,7 @@ async def handle_random(callback: CallbackQuery):
         reply_markup=get_after_prediction_keyboard(index)
     )
 
-# Кнопки под предсказанием
+# === Кнопки под предсказанием ===
 def get_after_prediction_keyboard(index):
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔁 Другое предсказание", callback_data=f"again:{index}")],
@@ -104,18 +117,18 @@ async def handle_back(callback: CallbackQuery):
         reply_markup=get_fanfic_keyboard(user_id=callback.from_user.id)
     )
 
-# Команда /addfanfic (по-прежнему работает)
+# === Добавление фанфика (команда) ===
 @dp.message(Command("addfanfic"))
 async def cmd_addfanfic(message: Message, state: FSMContext):
-    if message.from_user.id != ADMIN_ID:
+    if ADMIN_ID is None or message.from_user.id != ADMIN_ID:
         return await message.answer("⛔ Только для администратора.")
     await state.set_state(AddFanfic.waiting_for_title)
     await message.answer("✍️ Введи название новой работы:")
 
-# Обработка КНОПКИ "➕ Добавить фанфик"
+# === Добавление фанфика (кнопка) ===
 @dp.callback_query(F.data == "addfanfic")
 async def cb_addfanfic(callback: CallbackQuery, state: FSMContext):
-    if callback.from_user.id != ADMIN_ID:
+    if ADMIN_ID is None or callback.from_user.id != ADMIN_ID:
         return await callback.message.answer("⛔ Только для администратора.")
     await state.set_state(AddFanfic.waiting_for_title)
     await callback.message.answer("✍️ Введи название новой работы:")
@@ -145,7 +158,7 @@ async def get_text(message: Message, state: FSMContext):
     )
     await state.clear()
 
-# Запуск
+# === Запуск ===
 async def main():
     await dp.start_polling(bot)
 
